@@ -89,8 +89,9 @@ body { font-family: 'Exo 2', sans-serif; background: var(--bg); display: flex; f
 .step-icon { font-size: 16px; margin-bottom: 2px; display: block; }
 .step-fecha { font-size: 7.5px; opacity: 0.85; margin-top: 1px; font-family: 'Space Mono', monospace; }
 .step-done { background: linear-gradient(145deg, #1a6dbf, var(--zubex-blue)); color: white; box-shadow: inset 0 1px 0 rgba(255,255,255,0.2); }
-.step-active { background: linear-gradient(145deg, #e8612a, var(--zubex-orange)); color: white; box-shadow: inset 0 1px 0 rgba(255,255,255,0.2); animation: stepPulse 2s ease-in-out infinite; }
-@keyframes stepPulse { 0%,100%{box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 0 rgba(216,90,48,0.3)} 50%{box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 4px rgba(216,90,48,0)} }
+.step-active { background: linear-gradient(145deg, #1a9e5c, #22c55e); color: white; box-shadow: inset 0 1px 0 rgba(255,255,255,0.2); animation: stepPulse 2s ease-in-out infinite; }
+@keyframes stepPulse { 0%,100%{box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 0 rgba(34,197,94,0.3)} 50%{box-shadow: inset 0 1px 0 rgba(255,255,255,0.2), 0 0 0 4px rgba(34,197,94,0)} }
+.step-incomplete { background: linear-gradient(145deg, #e8612a, var(--zubex-orange)); color: white; box-shadow: inset 0 1px 0 rgba(255,255,255,0.2); }
 .step-pending { background: var(--zubex-pending); color: var(--zubex-pending-text); }
 .step:first-child { border-radius: 10px 0 0 10px; }
 .step:last-child { border-radius: 0 10px 10px 0; }
@@ -224,6 +225,7 @@ function stepState(status) {
   if (!status) return 'pending';
   var s = status.trim().toUpperCase();
   for (var i = 0; i < DONE_ST.length; i++) { if (s === DONE_ST[i]) return 'done'; }
+  if (s === 'INCOMPLETO' || s === 'PARCIAL') return 'incomplete';
   for (var j = 0; j < ACTIVE_ST.length; j++) { if (s.indexOf(ACTIVE_ST[j]) !== -1) return 'active'; }
   return 'pending';
 }
@@ -242,57 +244,66 @@ function tipoFolio(folio) {
   return 'normal';
 }
 
+function esFechaFutura(f) {
+  if (!f) return false;
+  var parts = f.split('/');
+  if (parts.length < 3) return false;
+  var yr = parseInt(parts[2]), mo = parseInt(parts[1])-1, dy = parseInt(parts[0]);
+  var fecha = new Date(yr, mo, dy);
+  var hoy = new Date(); hoy.setHours(0,0,0,0);
+  return fecha > hoy;
+}
+
 function generarMensaje(rows) {
   if (!rows.length) return 'No encontré ese pedido. Puedes buscar por número, cliente o código.';
   var pedido = rows[0].PEDIDO;
   var cliente = rows[0].CLIENTE;
   var folio = tipoFolio(rows[0].FOLIO);
   var n = rows.length;
-  if (folio === 'no_programado') return 'El pedido ' + pedido + ' de ' + cliente + ' aún no ha sido programado en producción. Por favor contacta al departamento de planeación.';
-  var fechaInvalida = false, incompleto = false;
-  for (var i = 0; i < rows.length; i++) {
-    var flow = getFlow(rows[i]);
-    var isStock = tipoFolio(rows[i].FOLIO) === 'stock';
-    for (var j = 0; j < flow.steps.length; j++) {
-      var s = flow.steps[j];
-      var st = (s.status || '').trim().toUpperCase();
-      if (isStock && s.key === 'EXT') continue;
-      if (DONE_ST.indexOf(st) !== -1) continue;
-      if (st === 'INCOMPLETO' || st === 'PARCIAL') { incompleto = true; continue; }
-      if (s.fecha && !fechaValida(s.fecha)) fechaInvalida = true;
-    }
-  }
-  if (fechaInvalida) return 'No tengo información clara del pedido ' + pedido + '. Por favor dirígete con el personal de planeación.';
   var partes = n === 1 ? '1 partida' : n + ' partidas';
-  var extDone=true, impDone=true, corrDone=true, bolDone=true, empDone=true;
-  var extNeeded=false, impNeeded=false, corrNeeded=false, bolNeeded=false, empNeeded=false;
-  var nextStep=null, nextFecha='';
+
+  if (folio === 'no_programado') return 'El pedido ' + pedido + ' de ' + cliente + ' aún no ha sido programado en producción. Por favor contacta al departamento de planeación.';
+
+  // Detect incompletos y fecha invalida
+  var incompletosCodigos = [], totalFechaInvalida = 0, allDone = true;
+
   for (var i = 0; i < rows.length; i++) {
     var flow = getFlow(rows[i]);
     var isStock = tipoFolio(rows[i].FOLIO) === 'stock';
+    var rowIncompleto = false, rowFechaInvalida = false, rowDone = true;
     for (var j = 0; j < flow.steps.length; j++) {
       var s = flow.steps[j];
-      var effectiveSt = (isStock && s.key === 'EXT') ? 'TERMINADO' : s.status;
-      var state = stepState(effectiveSt);
-      if (s.key==='EXT'){extNeeded=true; if(state!=='done')extDone=false;}
-      if (s.key==='IMP'){impNeeded=true; if(state!=='done')impDone=false;}
-      if (s.key==='CORR'){corrNeeded=true; if(state!=='done')corrDone=false;}
-      if (s.key==='BOL'){bolNeeded=true; if(state!=='done')bolDone=false;}
-      if (s.key==='EMP'){empNeeded=true; if(state!=='done')empDone=false;}
-      if (state!=='done' && !nextStep) { nextStep=s.label; nextFecha=(s.fecha&&fechaValida(s.fecha))?' el '+s.fecha:''; }
+      var st = (isStock && s.key === 'EXT') ? 'TERMINADO' : (s.status || '').trim().toUpperCase();
+      if (DONE_ST.indexOf(st) !== -1) continue;
+      rowDone = false;
+      if (st === 'INCOMPLETO' || st === 'PARCIAL') { rowIncompleto = true; continue; }
+      if (s.fecha && !fechaValida(s.fecha)) rowFechaInvalida = true;
     }
+    if (!rowDone) allDone = false;
+    if (rowIncompleto) incompletosCodigos.push(rows[i].CODIGO || ('partida ' + (i+1)));
+    if (rowFechaInvalida) totalFechaInvalida++;
   }
-  var msg = 'Pedido ' + pedido + ' de ' + cliente + ', ' + partes + '. ';
-  var hechos = [];
-  if (extNeeded&&extDone) hechos.push('ya extruido');
-  if (impNeeded&&impDone) hechos.push('impreso');
-  if (corrNeeded&&corrDone) hechos.push('corrugado');
-  if (bolNeeded&&bolDone) hechos.push('bolseado');
-  if (empNeeded&&empDone) hechos.push('empacado');
-  if (hechos.length) msg += hechos.join(', ') + '. ';
-  if (nextStep) msg += 'Pendiente: ' + nextStep + nextFecha + '.';
-  else msg += 'Todo terminado, listo para entrega. ✅';
-  if (incompleto) msg += ' ⚠️ Al parecer fue concluido con un faltante, valídalo con planeación.';
+
+  if (totalFechaInvalida === n) return 'No tengo información clara del pedido ' + pedido + '. Por favor dirígete con el personal de planeación.';
+
+  // All incomplete
+  if (incompletosCodigos.length === n) {
+    return 'Pedido ' + pedido + ' de ' + cliente + ', ' + partes + '. ⚠️ Al parecer fue concluido con un faltante, valídalo con el departamento de planeación.';
+  }
+
+  // All done
+  if (allDone) {
+    return 'Pedido ' + pedido + ' de ' + cliente + ', ' + partes + '. Todo listo para entrega. ✅';
+  }
+
+  // In progress - just say pedido + partidas, no status detail
+  var msg = 'Pedido ' + pedido + ' de ' + cliente + ', ' + partes + '.';
+
+  // Only add incompleto warning with specific codes
+  if (incompletosCodigos.length > 0) {
+    msg += ' ⚠️ El código ' + incompletosCodigos.join(', ') + ' al parecer fue concluido con un faltante, valídalo con el departamento de planeación.';
+  }
+
   return msg;
 }
 
@@ -343,17 +354,18 @@ function renderCard(row) {
     var s = steps[i];
     var effectiveStatus = (isStock && s.key==='EXT') ? 'TERMINADO' : s.status;
     var state = stepState(effectiveStatus);
-    var cls = state==='done' ? 'step-done' : state==='active' ? 'step-active' : 'step-pending';
+    var cls = state==='done' ? 'step-done' : state==='active' ? 'step-active' : state==='incomplete' ? 'step-incomplete' : 'step-pending';
     var icon = STEP_ICONS[s.key] || '⚙️';
     var fechaHtml = (s.fecha && state!=='done') ? '<span class="step-fecha">'+s.fecha+'</span>' : '';
     stepsHtml += '<div class="step '+cls+'"><span class="step-icon">'+icon+'</span>'+s.label+fechaHtml+'</div>';
   }
   return '<div class="card"><div class="tags">'+tags+'</div>'+
-    '<div class="desc">'+( row['DESCRIPCIÓN']||'')+'</div>'+
+    '<div class="desc">'+(row['CODIGO']||'')+' · '+( row['DESCRIPCIÓN']||'')+'</div>'+
     '<div class="stepbar">'+stepsHtml+'</div>'+
     '<div class="legend">'+
     '<div class="legend-item"><div class="legend-dot" style="background:var(--zubex-blue)"></div>Terminado</div>'+
-    '<div class="legend-item"><div class="legend-dot" style="background:var(--zubex-orange)"></div>En proceso</div>'+
+    '<div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>En proceso</div>'+
+    '<div class="legend-item"><div class="legend-dot" style="background:var(--zubex-orange)"></div>Incompleto</div>'+
     '<div class="legend-item"><div class="legend-dot" style="background:var(--zubex-pending)"></div>Pendiente</div>'+
     '</div></div>';
 }
